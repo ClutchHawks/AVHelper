@@ -27,20 +27,14 @@
       /avh show / hide         - Show/hide the window.
       /avh reset               - Clear all lock/unlock state (start of a new pull).
       /avh mute / unmute       - Toggle sound alerts.
-      /avh mobname <name>      - Set the exact mob name to watch for (default "Absolute Virtue").
       /avh speechreset on/off  - Toggle auto-reset when AV's engage speech is seen in chat.
-      /avh phrases             - List the speech phrases that trigger an auto-reset.
-      /avh addphrase <text>    - Add a speech phrase (paste text straight from your chat log).
-      /avh delphrase <number>  - Remove a speech phrase by its number from /avh phrases.
-      /avh abilities           - List tracked/disabled abilities and resolved ids.
-      /avh enable <name>       - Start tracking an ability.
-      /avh disable <name>      - Stop tracking an ability.
+      /avh abilities           - List tracked abilities and resolved ids.
       /avh help                - Print this command list.
 --]]
 
 addon.name      = 'avhelper';
 addon.author    = 'ClutchHawks';
-addon.version   = '4.0';
+addon.version   = '4.1';
 addon.desc      = 'Absolute Virtue SP-ability trigger/lock tracker.';
 addon.link      = '';
 
@@ -601,14 +595,8 @@ local function print_help()
         { '/avh hide',                 'Hide the window.', },
         { '/avh reset',                'Clear all lock/unlock state (start of a new pull).', },
         { '/avh mute / unmute',        'Toggle sound alerts.', },
-        { '/avh mobname <name>',       'Set the exact mob name to watch for.', },
         { '/avh speechreset on/off',   'Toggle auto-reset when AV\'s engage speech is seen in chat.', },
-        { '/avh phrases',              'List the speech phrases that trigger an auto-reset.', },
-        { '/avh addphrase <text>',     'Add a speech phrase (from a real chat line) to trigger auto-reset.', },
-        { '/avh delphrase <number>',   'Remove a speech phrase by its number from /avh phrases.', },
-        { '/avh abilities',            'List tracked/disabled abilities and resolved ids.', },
-        { '/avh enable <name>',        'Start tracking an ability.', },
-        { '/avh disable <name>',       'Stop tracking an ability.', },
+        { '/avh abilities',            'List tracked abilities and resolved ids.', },
         { '/avh help',                 'Shows this help.', },
     };
 
@@ -651,14 +639,6 @@ ashita.events.register('command', 'avh_command_cb', function (e)
         avh.settings.general.play_sound = true;
         settings.save();
         print_msg('Sound alerts unmuted.');
-    elseif (sub == 'mobname') then
-        if (args[3] == nil) then
-            print_msg('Usage: /avh mobname <name>');
-            return;
-        end
-        avh.settings.general.mob_name = args:concat(' ', 3);
-        settings.save();
-        print_msg(('Now watching for mob name: "%s"'):fmt(avh.settings.general.mob_name));
     elseif (sub == 'speechreset') then
         local val = (args[3] or ''):lower();
         if (val == 'on') then
@@ -673,37 +653,6 @@ ashita.events.register('command', 'avh_command_cb', function (e)
             print_msg(('Auto-reset on AV engage speech is currently %s. Usage: /avh speechreset on|off'):fmt(
                 avh.settings.general.auto_reset_on_speech and 'ON' or 'OFF'));
         end
-    elseif (sub == 'phrases') then
-        print_msg('Speech phrases that trigger an auto-reset (normalized: lowercase, repeated "s" collapsed):');
-        for i, phrase in ipairs(avh.settings.speech_phrases) do
-            print_msg(('  %d. "%s"'):fmt(i, phrase));
-        end
-    elseif (sub == 'addphrase') then
-        if (args[3] == nil) then
-            print_msg('Usage: /avh addphrase <text seen in chat>');
-            return;
-        end
-        local phrase = normalize_chat_text(args:concat(' ', 3));
-        if (#phrase == 0) then
-            print_msg('Nothing usable left after normalizing that text.');
-            return;
-        end
-        avh.settings.speech_phrases:append(phrase);
-        settings.save();
-        print_msg(('Added phrase: "%s"'):fmt(phrase));
-    elseif (sub == 'delphrase') then
-        if (args[3] == nil) then
-            print_msg('Usage: /avh delphrase <number from /avh phrases>');
-            return;
-        end
-        local idx = tonumber(args[3]);
-        if (idx == nil or avh.settings.speech_phrases[idx] == nil) then
-            print_msg('Usage: /avh delphrase <number from /avh phrases>');
-            return;
-        end
-        local removed = table.remove(avh.settings.speech_phrases, idx);
-        settings.save();
-        print_msg(('Removed phrase: "%s"'):fmt(removed));
     elseif (sub == 'abilities') then
         print_msg('Tracked abilities (player-side id used to detect the counter-SP):');
         for _, name in ipairs(ABILITY_ORDER) do
@@ -716,32 +665,6 @@ ashita.events.register('command', 'avh_command_cb', function (e)
                 ));
             end
         end
-        print_msg('Disabled (not tracked, not shown in the window):');
-        for _, name in ipairs(ABILITY_ORDER) do
-            if (not avh.settings.abilities[name]) then
-                print_msg('  ' .. name);
-            end
-        end
-    elseif (sub == 'enable' or sub == 'disable') then
-        if (args[3] == nil) then
-            print_msg(('Usage: /avh %s <ability name>'):fmt(sub));
-            return;
-        end
-        local name_arg = args:concat(' ', 3);
-        local matched = nil;
-        for _, name in ipairs(ABILITY_ORDER) do
-            if (name:lower() == name_arg:lower()) then
-                matched = name;
-            end
-        end
-        if (matched == nil) then
-            print_msg('Unknown ability name: ' .. name_arg);
-            return;
-        end
-        avh.settings.abilities[matched] = (sub == 'enable');
-        settings.save();
-        resolve_abilities();
-        print_msg(('%s is now %s.'):fmt(matched, (sub == 'enable') and 'tracked' or 'disabled'));
     else
         print_help();
     end

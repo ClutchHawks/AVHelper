@@ -32,13 +32,8 @@ Shisui, Eagle Eye Shot, Call Wyvern.
 | `/avh show` / `/avh hide` | Show/hide the window |
 | `/avh reset` | Clear all lock/unlock state |
 | `/avh mute` / `/avh unmute` | Toggle sound alerts |
-| `/avh mobname <name>` | Change the mob name being watched for |
 | `/avh speechreset on` / `off` | Toggle auto-reset on AV's engage speech |
-| `/avh phrases` | List the speech phrases that trigger an auto-reset |
-| `/avh addphrase <text>` | Add a speech phrase, pasted straight from chat |
-| `/avh delphrase <number>` | Remove a speech phrase by its number |
-| `/avh abilities` | List tracked/disabled abilities and resolved ids |
-| `/avh enable <name>` / `/avh disable <name>` | Add or remove an ability from tracking |
+| `/avh abilities` | List tracked abilities and resolved ids |
 | `/avh help` | Show the command list |
 
 ## Configuration
