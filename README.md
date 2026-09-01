@@ -20,6 +20,9 @@ shows which are still live vs. locked for the rest of the pull.
 - A fresh pull is detected automatically from AV's engage speech in chat, or
   on zoning. `/avh reset` also works manually at any time.
 
+<img width="360" height="401" alt="Screenshot 2026-09-02 002536" src="https://github.com/user-attachments/assets/4e937f3c-d923-43af-9e96-433737229500" />
+
+
 Tracked abilities: Mighty Strikes, Benediction, Hundred Fists, Manafont,
 Chainspell, Perfect Dodge, Invincible, Blood Weapon, Soul Voice, Meikyo
 Shisui, Eagle Eye Shot, Call Wyvern.
