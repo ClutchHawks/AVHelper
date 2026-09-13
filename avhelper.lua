@@ -13,6 +13,10 @@
     fonts/primitives - this gives a single real window (drag/resize/close as one native unit)
     instead of a collection of independently movable text/box objects.
 
+    Auto-detects your current job: if it's one of the tracked 2-hour jobs, that ability's name is
+    highlighted in the table (colorblind-safe blue), and AV using that specific reaction plays a
+    distinct notification sound (general.sound_trigger_own) instead of the normal trigger sound.
+
     IMPORTANT - about the lock window timing:
     CatsEyeXI's public "base" branch Absolute_Virtue.lua (github.com/CatsAndBoats/catseyexi)
     hard-codes a 3-second lock window, but the live server actually runs a private override script
@@ -29,12 +33,14 @@
       /avh mute / unmute       - Toggle sound alerts.
       /avh speechreset on/off  - Toggle auto-reset when AV's engage speech is seen in chat.
       /avh abilities           - List tracked abilities and resolved ids.
+      /avh lock <job>          - Manually mark a job's 2hr LOCKED (e.g. /avh lock drg).
+      /avh unlock <job>        - Manually mark a job's 2hr UNLOCKED again (e.g. /avh unlock sam).
       /avh help                - Print this command list.
 --]]
 
 addon.name      = 'avhelper';
 addon.author    = 'ClutchHawks';
-addon.version   = '4.1';
+addon.version   = '4.5';
 addon.desc      = 'Absolute Virtue SP-ability trigger/lock tracker.';
 addon.link      = '';
 
@@ -64,12 +70,12 @@ local default_settings = T{
     general = T{
         enabled             = true,    -- master on/off switch
         mob_name            = 'Absolute Virtue', -- must match the entity's in-game name exactly (case-insensitive)
-        auto_reset_on_zone  = true,    -- clear all lock/unlock state whenever you change zones (new pull)
         auto_reset_on_speech= true,    -- clear all lock/unlock state when AV's own engage speech is seen in chat
         play_sound          = true,
         -- These point at stock Windows sound files so alerts work out of the box.
         -- Replace with your own .wav paths (e.g. C:\FFXI\config\addons\avhelper\alert.wav) if you like.
         sound_trigger       = 'C:\\Windows\\Media\\Windows Notify System Generic.wav',
+        sound_trigger_own   = 'C:\\Windows\\Media\\Windows Notify Messaging.wav', -- AV used YOUR job's 2hr
         sound_lock          = 'C:\\Windows\\Media\\Windows Notify Calendar.wav',
     },
 
@@ -131,8 +137,45 @@ local MOB_SKILL_IDS = T{
     ['Blood Weapon']       = 695,
     ['Soul Voice']         = 696,
     ['Meikyo Shisui']      = 730,
-    ['Call Wyvern']        = 732,
+    ['Call Wyvern']        = 626, -- confirmed via /avh debug: "Absolute Virtue uses Call Wyvern." -> Type=11 Id=626 (732 was wrong)
     ['Eagle Eye Shot']     = 1389, -- EES_AERN
+};
+
+-- Job -> 2-hour ability name, for /avh lock <job> (manually mark a job's 2hr LOCKED - a fallback
+-- for when auto-detection misses a real lock that happened in-game).
+local JOB_TO_ABILITY = T{
+    war = 'Mighty Strikes',
+    whm = 'Benediction',
+    mnk = 'Hundred Fists',
+    blm = 'Manafont',
+    rdm = 'Chainspell',
+    thf = 'Perfect Dodge',
+    pld = 'Invincible',
+    drk = 'Blood Weapon',
+    brd = 'Soul Voice',
+    sam = 'Meikyo Shisui',
+    rng = 'Eagle Eye Shot',
+    drg = 'Call Wyvern',
+};
+
+-- Numeric job id (AshitaCore:GetMemoryManager():GetPlayer():GetMainJob(), standard FFXI job
+-- order: 1=WAR, 2=MNK, 3=WHM, 4=BLM, 5=RDM, 6=THF, 7=PLD, 8=DRK, 10=BRD, 11=RNG, 12=SAM, 14=DRG)
+-- -> the 2-hour ability tied to that job, for highlighting "your" row and playing a distinct
+-- notification when AV uses the reaction to YOUR own job's SP. Jobs with no tracked ability here
+-- (BST, NIN, SMN, and everything without a public/AV-relevant 2hr) are simply absent.
+local JOB_ID_TO_ABILITY = T{
+    [1]  = 'Mighty Strikes',   -- WAR
+    [2]  = 'Hundred Fists',    -- MNK
+    [3]  = 'Benediction',      -- WHM
+    [4]  = 'Manafont',         -- BLM
+    [5]  = 'Chainspell',       -- RDM
+    [6]  = 'Perfect Dodge',    -- THF
+    [7]  = 'Invincible',       -- PLD
+    [8]  = 'Blood Weapon',     -- DRK
+    [10] = 'Soul Voice',       -- BRD
+    [11] = 'Eagle Eye Shot',   -- RNG
+    [12] = 'Meikyo Shisui',    -- SAM
+    [14] = 'Call Wyvern',      -- DRG
 };
 
 local ALERT_DISPLAY_SECONDS = 4.0; -- how long the top alert line holds a message before going idle
@@ -144,7 +187,7 @@ local ALERT_DISPLAY_SECONDS = 4.0; -- how long the top alert line holds a messag
 local LOCK_WINDOW = 10.0;
 
 -- Fixed window width (pixels) - see render() for why this isn't just AlwaysAutoResize.
-local WINDOW_WIDTH = 360.0;
+local WINDOW_WIDTH = 300.0;
 
 --------------------------------------------------------------------------------------------------
 -- Addon state
@@ -173,6 +216,11 @@ local COLOR_ARMED           = T{ 1.00, 0.40, 0.27, 1.0 }; -- needs a response ri
 local COLOR_LOCKED          = T{ 0.33, 0.87, 0.33, 1.0 }; -- successfully locked (good outcome)
 local COLOR_UNLOCKED        = T{ 0.88, 0.75, 0.38, 1.0 }; -- still a live threat, no active window
 local COLOR_WARNING         = T{ 1.00, 0.85, 0.30, 1.0 };
+-- Highlights the ABILITY NAME (not its status) for whichever row is your current job's 2hr. Blue
+-- is used deliberately: the status column already relies on red/orange vs. green vs. yellow, which
+-- the most common forms of color blindness (deuteranopia/protanopia, red-green) can make hard to
+-- tell apart - blue reads as clearly distinct from all of those regardless.
+local COLOR_MY_JOB          = T{ 0.40, 0.70, 1.00, 1.0 };
 
 --------------------------------------------------------------------------------------------------
 -- Helpers
@@ -224,7 +272,10 @@ local function resolve_abilities()
         if (ok and ability ~= nil and ability.Name ~= nil and ability.Name[1] ~= nil and #ability.Name[1] > 0) then
             local nm = ability.Name[1];
             for _, tracked in ipairs(ABILITY_ORDER) do
-                if (avh.settings.abilities[tracked] and nm:lower() == tracked:lower()) then
+                -- Only take the FIRST id that matches a given name - if some other unrelated
+                -- entry elsewhere in the merged resource space happens to share the exact same
+                -- name, a later higher id must never silently overwrite an already-correct match.
+                if (avh.settings.abilities[tracked] and avh.ability_ids[tracked] == nil and nm:lower() == tracked:lower()) then
                     -- Displayed via /avh abilities as the resource id (matches what you'd look up
                     -- elsewhere), but the packet-matching table uses the offset-corrected id.
                     avh.ability_ids[tracked] = id;
@@ -253,6 +304,23 @@ local function resolve_abilities()
         end);
         print_msg('Locking will not work for them until this is fixed (the ARMED alert from AV will still show).');
     end
+end
+
+--------------------------------------------------------------------------------------------------
+-- Returns the tracked ability name tied to your CURRENT main job (e.g. 'Call Wyvern' if you're
+-- playing DRG right now), or nil if your current job has no tracked AV reaction. Read fresh each
+-- time rather than cached, so a job change (which needs a zone anyway) is always picked up.
+--------------------------------------------------------------------------------------------------
+local function get_my_job_ability()
+    local ok, player = pcall(function () return AshitaCore:GetMemoryManager():GetPlayer(); end);
+    if (not ok or player == nil) then
+        return nil;
+    end
+    local job_ok, job_id = pcall(function () return player:GetMainJob(); end);
+    if (not job_ok or job_id == nil) then
+        return nil;
+    end
+    return JOB_ID_TO_ABILITY[job_id];
 end
 
 --------------------------------------------------------------------------------------------------
@@ -373,6 +441,13 @@ local CATEGORY_JOB_ABILITY              = 6;
 local CATEGORY_JOB_ABILITY_UNBLINKABLE  = 14;
 local CATEGORY_MOB_TP_MOVE              = 11;
 
+-- Eagle Eye Shot fires an actual shot, so the game reports the real player use as a "Ranged
+-- Attack" action (category 3) rather than a plain job ability (6/14) - confirmed via /avh debug:
+-- a RNG's genuine Eagle Eye Shot showed up as Type=3, not Type=6/14, which is why the ARMED alert
+-- from AV fired fine (that's the mob-skill/category-11 path) but the real counter never locked it
+-- (category 3 wasn't being checked at all). Uses the same id_to_name table/offset as 6/14.
+local CATEGORY_RANGED_ATTACK            = 3;
+
 --------------------------------------------------------------------------------------------------
 -- Chat text normalization + AV speech detection.
 --
@@ -466,7 +541,48 @@ local function handle_av_use(name)
     avh.bar_start  = os.clock();
     avh.bar_window = LOCK_WINDOW;
 
-    play_sound(avh.settings.general.sound_trigger);
+    -- Play a distinct notification when this is the reaction tied to YOUR current job, so it
+    -- stands out from the general "something used, someone counter it" alert.
+    if (name == get_my_job_ability()) then
+        play_sound(avh.settings.general.sound_trigger_own);
+    else
+        play_sound(avh.settings.general.sound_trigger);
+    end
+end
+
+--------------------------------------------------------------------------------------------------
+-- Manually marks an ability LOCKED regardless of armed/timing state - a fallback for when
+-- detection misses something that genuinely locked in-game, and for the /avh lock <job> command.
+--------------------------------------------------------------------------------------------------
+local function force_lock(name, note)
+    local st = avh.state[name];
+    if (st == nil) then
+        return;
+    end
+    st.status = 'locked';
+    st.armed  = false;
+    avh.bar_active = false;
+
+    print_msg(chat.success(('%s marked LOCKED (%s).'):fmt(name, note)));
+    set_alert(('%s LOCKED (%s)'):fmt(name, note), COLOR_LOCKED);
+    play_sound(avh.settings.general.sound_lock);
+end
+
+--------------------------------------------------------------------------------------------------
+-- Manually marks an ability UNLOCKED again - for correcting a mistaken LOCKED (a false-positive
+-- match, or a /avh lock used by accident), via the /avh unlock <job> command.
+--------------------------------------------------------------------------------------------------
+local function force_unlock(name, note)
+    local st = avh.state[name];
+    if (st == nil) then
+        return;
+    end
+    st.status = 'unlocked';
+    st.armed  = false;
+    avh.bar_active = false;
+
+    print_msg(chat.warning(('%s marked UNLOCKED (%s).'):fmt(name, note)));
+    set_alert(('%s UNLOCKED (%s)'):fmt(name, note), COLOR_UNLOCKED);
 end
 
 local function handle_player_use(name, actor_name)
@@ -515,7 +631,14 @@ local function render()
     if (avh.bar_active and (now - avh.bar_start) > avh.bar_window) then
         avh.bar_active = false;
     end
-    if (avh.alert_set_at > 0 and (now - avh.alert_set_at) > ALERT_DISPLAY_SECONDS) then
+    -- The alert line used to expire on its own fixed 4-second timer regardless of the bar, so the
+    -- "used by AV - counter now!" message (and its orange color) vanished back to idle grey well
+    -- before the real 10-second lock window ran out - looking like the countdown was much shorter
+    -- than it actually was. Now it only expires once the bar itself is no longer active, so the
+    -- alert and the bar always agree: it shows LOCKED (or reverts once the window truly expires)
+    -- at the same moment, and only the ALERT_DISPLAY_SECONDS timer governs how long a LOCKED/no-bar
+    -- message lingers afterward.
+    if (not avh.bar_active and avh.alert_set_at > 0 and (now - avh.alert_set_at) > ALERT_DISPLAY_SECONDS) then
         avh.alert_text   = 'No activity yet.';
         avh.alert_color  = COLOR_IDLE;
         avh.alert_set_at = 0;
@@ -539,16 +662,25 @@ local function render()
         imgui.Separator();
 
         if (imgui.BeginTable('avh_table', 2, bit.bor(ImGuiTableFlags_Borders, ImGuiTableFlags_RowBg, ImGuiTableFlags_SizingStretchProp))) then
-            imgui.TableSetupColumn('Ability');
-            imgui.TableSetupColumn('Status');
+            -- Explicit stretch weights instead of the 50/50 default - the longest ability names
+            -- ("Eagle Eye Shot", "Meikyo Shisui") need more room than the short status labels
+            -- ("unlocked", "LOCKED"), and an even split was leaving visible dead space on the
+            -- Status side.
+            imgui.TableSetupColumn('Ability', ImGuiTableColumnFlags_WidthStretch, 0.58, 0);
+            imgui.TableSetupColumn('Status', ImGuiTableColumnFlags_WidthStretch, 0.42, 0);
             imgui.TableHeadersRow();
 
+            local my_ability = get_my_job_ability();
             for _, name in ipairs(ABILITY_ORDER) do
                 if (avh.settings.abilities[name]) then
                     imgui.TableNextRow();
 
                     imgui.TableNextColumn();
-                    imgui.Text(name);
+                    if (name == my_ability) then
+                        imgui.TextColored(COLOR_MY_JOB, name);
+                    else
+                        imgui.Text(name);
+                    end
 
                     imgui.TableNextColumn();
                     local st = avh.state[name];
@@ -597,6 +729,8 @@ local function print_help()
         { '/avh mute / unmute',        'Toggle sound alerts.', },
         { '/avh speechreset on/off',   'Toggle auto-reset when AV\'s engage speech is seen in chat.', },
         { '/avh abilities',            'List tracked abilities and resolved ids.', },
+        { '/avh lock <job>',           'Manually mark a job\'s 2hr LOCKED (e.g. /avh lock drg).', },
+        { '/avh unlock <job>',         'Manually mark a job\'s 2hr UNLOCKED again (e.g. /avh unlock sam).', },
         { '/avh help',                 'Shows this help.', },
     };
 
@@ -665,6 +799,30 @@ ashita.events.register('command', 'avh_command_cb', function (e)
                 ));
             end
         end
+    elseif (sub == 'lock') then
+        if (args[3] == nil) then
+            print_msg('Usage: /avh lock <job> (e.g. /avh lock drg, /avh lock sam)');
+            return;
+        end
+        local job = args[3]:lower();
+        local name = JOB_TO_ABILITY[job];
+        if (name == nil) then
+            print_msg('Unknown job: ' .. job .. '. Valid: war, whm, mnk, blm, rdm, thf, pld, drk, brd, sam, rng, drg');
+            return;
+        end
+        force_lock(name, 'manual');
+    elseif (sub == 'unlock') then
+        if (args[3] == nil) then
+            print_msg('Usage: /avh unlock <job> (e.g. /avh unlock drg, /avh unlock sam)');
+            return;
+        end
+        local job = args[3]:lower();
+        local name = JOB_TO_ABILITY[job];
+        if (name == nil) then
+            print_msg('Unknown job: ' .. job .. '. Valid: war, whm, mnk, blm, rdm, thf, pld, drk, brd, sam, rng, drg');
+            return;
+        end
+        force_unlock(name, 'manual');
     else
         print_help();
     end
@@ -684,12 +842,6 @@ end);
 --------------------------------------------------------------------------------------------------
 ashita.events.register('packet_in', 'avh_packet_in_cb', function (e)
     if (not avh.settings.general.enabled) then
-        return;
-    end
-
-    -- Zone change: treat as a new pull and reset all lock/unlock state.
-    if (e.id == 0x000A and avh.settings.general.auto_reset_on_zone) then
-        reset_state();
         return;
     end
 
@@ -720,7 +872,7 @@ ashita.events.register('packet_in', 'avh_packet_in_cb', function (e)
         return;
     end
 
-    if (pkt.Type == CATEGORY_JOB_ABILITY or pkt.Type == CATEGORY_JOB_ABILITY_UNBLINKABLE) then
+    if (pkt.Type == CATEGORY_JOB_ABILITY or pkt.Type == CATEGORY_JOB_ABILITY_UNBLINKABLE or pkt.Type == CATEGORY_RANGED_ATTACK) then
         local ability_name = avh.id_to_name[pkt.Id];
         if (ability_name == nil) then
             return;
